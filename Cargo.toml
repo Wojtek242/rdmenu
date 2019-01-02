@@ -12,3 +12,5 @@ Library for the rdmenu launcher.
 """
 
 [dependencies]
+clap = "2"
+structopt = "0.2"
