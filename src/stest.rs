@@ -2,6 +2,7 @@ extern crate libc;
 
 use std::error::Error;
 use std::ffi::CString;
+use std::fs::Metadata;
 use std::os::linux::fs::MetadataExt;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -153,104 +154,75 @@ impl<'t> Stest<'t> {
 
     fn test(&self, path: &PathBuf) -> bool {
 
-        // --------------------------------------------------------------------
-        // Extract file information.
-        // --------------------------------------------------------------------
-
-        let file = match path.metadata() {
-            Ok(meta) => meta,
-            Err(_) => return false,
+        let file = path.metadata();
+        let c_path = path.to_str().and_then(|path| CString::new(path).ok());
+        let file_name = match path.file_name() {
+            Some(os_str) => os_str.to_str(),
+            None => {
+                path.to_str().and_then(|path_str| {
+                    path_str.split(std::path::MAIN_SEPARATOR).last()
+                })
+            }
         };
 
-        let file_name = match path.file_name().and_then(|os_str| os_str.to_str()) {
-            Some(name) => name,
-            None => return false,
-        };
 
-        let c_path = match path.to_str().and_then(|path| CString::new(path).ok()) {
-            Some(path) => path,
-            None => return false,
-        };
+        let mut result = file.is_ok() && c_path.is_some() && file_name.is_some();
 
-        // --------------------------------------------------------------------
-        // Run the checks.
-        // --------------------------------------------------------------------
+        if result {
+            // If `result` is true, all three are guaranteed to unwrap.
+            let file = file.unwrap();
+            let c_path = c_path.unwrap();
+            let file_name = file_name.unwrap();
 
-        if !self.opt.hidden && file_name.starts_with('.') {
-            return false; // Exclude hidden files
+            result = (self.opt.hidden || !file_name.starts_with('.')) &&
+                (!self.opt.block_special || s_isval(libc::S_IFBLK, &file)) &&
+                (!self.opt.char_special || s_isval(libc::S_IFCHR, &file)) &&
+                (!self.opt.directory || file.is_dir()) &&
+                (!self.opt.regular || file.is_file()) &&
+                (!self.opt.set_gid_set || s_isset(libc::S_ISGID, &file)) &&
+                (!self.opt.symbolic_link || is_symlink(path)) &&
+                (!self.opt.newer_than.is_some() ||
+                     (self.compare.unwrap() < file.modified().unwrap())) &&
+                (!self.opt.older_than.is_some() ||
+                     (file.modified().unwrap() < self.compare.unwrap())) &&
+                (!self.opt.fifo || s_isval(libc::S_IFIFO, &file)) &&
+                (!self.opt.readable || access(libc::R_OK, &c_path)) &&
+                (!self.opt.not_empty || (file.len() > 0)) &&
+                (!self.opt.set_gid_set || s_isset(libc::S_ISUID, &file)) &&
+                (!self.opt.writable || access(libc::W_OK, &c_path)) &&
+                (!self.opt.executable || access(libc::X_OK, &c_path));
         }
 
-        if self.opt.block_special && (file.st_mode() & libc::S_IFMT) == libc::S_IFBLK {
-            return false; // Not block special
+        result ^= self.opt.invert;
+
+        if result && !self.opt.quiet {
+            if let Some(name) = file_name {
+                println!("{}", name);
+            } else if let Some(name) = path.to_str() {
+                println!("{}", name);
+            }
         }
 
-        if self.opt.char_special && !((file.st_mode() & libc::S_IFMT) == libc::S_IFCHR) {
-            return false; // Not char special
-        }
-
-        if self.opt.directory && !file.is_dir() {
-            return false; // Not a directory
-        }
-
-        if self.opt.regular && !file.is_file() {
-            return false; // Not a file
-        }
-
-        if self.opt.set_gid_set && !((file.st_mode() & libc::S_ISGID as u32) != 0) {
-            return false; // Set GID flag unset
-        }
-
-        if self.opt.symbolic_link &&
-            !path.symlink_metadata()
-                .ok()
-                .filter(|link| link.file_type().is_symlink())
-                .is_some()
-        {
-            return false;
-        }
-
-        // modified() only returns an error if it is not supported on the
-        // current platform and since we already have the time for the file we
-        // are comparing against then we already know it must be supported.
-
-        if self.opt.newer_than.is_some() && !(self.compare.unwrap() < file.modified().unwrap()) {
-            return false; // Older than other file
-        }
-
-        if self.opt.older_than.is_some() && !(file.modified().unwrap() < self.compare.unwrap()) {
-            return false; // Newer than other file
-        }
-
-        if self.opt.fifo && !((file.st_mode() & libc::S_IFMT) == libc::S_IFIFO) {
-            return false; // Not a named pipe
-        }
-
-        if self.opt.readable && !(unsafe { libc::access(c_path.as_ptr(), libc::R_OK) } == 0) {
-            return false; // Not readable
-        }
-
-        if self.opt.not_empty && !(file.len() > 0) {
-            return false; // Empty
-        }
-
-        if self.opt.set_gid_set && !((file.st_mode() & libc::S_ISUID as u32) != 0) {
-            return false; // Set UID flag unset
-        }
-
-        if self.opt.writable && !(unsafe { libc::access(c_path.as_ptr(), libc::W_OK) } == 0) {
-            return false; // Not writable
-        }
-
-        if self.opt.executable && !(unsafe { libc::access(c_path.as_ptr(), libc::X_OK) } == 0) {
-            return false; // Not executable
-        }
-
-        // --------------------------------------------------------------------
-        // Print files that passed all checks.
-        // --------------------------------------------------------------------
-
-        println!("{}", file_name);
-        true
+        result
 
     }
+}
+
+fn s_isval(s_ifval: u32, file: &Metadata) -> bool {
+    (file.st_mode() & libc::S_IFMT) == s_ifval
+}
+
+fn s_isset(s_isflg: i32, file: &Metadata) -> bool {
+    (file.st_mode() & s_isflg as u32) != 0
+}
+
+fn is_symlink(path: &PathBuf) -> bool {
+    path.symlink_metadata()
+        .ok()
+        .filter(|link| link.file_type().is_symlink())
+        .is_some()
+}
+
+fn access(rwx: i32, c_path: &CString) -> bool {
+    (unsafe { libc::access(c_path.as_ptr(), rwx) } == 0)
 }
