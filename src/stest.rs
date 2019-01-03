@@ -1,5 +1,11 @@
+//! stest
+//!
+//! Filter a list of files by properties.
+
+// External crates
 extern crate libc;
 
+// std imports
 use std::error::Error;
 use std::ffi::CString;
 use std::fs::Metadata;
@@ -91,10 +97,13 @@ pub struct Opt {
     files: Vec<PathBuf>,
 }
 
+/// Reduce method for accumulating stest outcomes if multiple files are tested.
 fn reduce(acc: bool, x: bool) -> bool {
     acc || x
 }
 
+/// Run stest with the provided options. Returns an error if it cannot open the
+/// `newer_than` or `older_than` files.
 pub fn run(opt: &Opt) -> Result<bool, Box<Error>> {
     let compare = if let Some(ref file_path) = opt.newer_than {
         Some(file_path.metadata()?.modified()?)
@@ -109,12 +118,14 @@ pub fn run(opt: &Opt) -> Result<bool, Box<Error>> {
     Ok(stest.run())
 }
 
+/// Struct representing current stest instance.
 struct Stest<'t> {
     opt: &'t Opt,
     compare: Option<SystemTime>,
 }
 
 impl<'t> Stest<'t> {
+    /// Run stest.
     fn run(&self) -> bool {
         if self.opt.files.is_empty() {
             self.run_stdin()
@@ -123,10 +134,12 @@ impl<'t> Stest<'t> {
         }
     }
 
+    /// Take input from stdin - currently not supported.
     fn run_stdin(&self) -> bool {
         panic!("Read from stdin");
     }
 
+    /// Take input from the files passed in the options.
     fn run_opts(&self) -> bool {
         let iter = self.opt.files.iter();
 
@@ -141,6 +154,7 @@ impl<'t> Stest<'t> {
         }
     }
 
+    /// Test the contents of a directory.
     fn test_dir(&self, dir_path: &PathBuf) -> bool {
         if let Ok(dir) = dir_path.read_dir() {
             let dir_contents = dir.filter_map(|path_result| {
@@ -160,6 +174,7 @@ impl<'t> Stest<'t> {
         false
     }
 
+    /// Test the provided file.
     fn test(&self, path: &PathBuf, file_name: &str) -> bool {
 
         let file = path.metadata();
@@ -206,14 +221,18 @@ impl<'t> Stest<'t> {
     }
 }
 
+/// Utility function to provide the function of the libc macros such as ISBLK,
+/// ISCHR, ISFIFO.
 fn s_isval(s_ifval: u32, file: &Metadata) -> bool {
     (file.st_mode() & libc::S_IFMT) == s_ifval
 }
 
+/// Utility function to check the flags if the file's mode.
 fn s_isset(s_isflg: i32, file: &Metadata) -> bool {
     (file.st_mode() & s_isflg as u32) != 0
 }
 
+/// Utility function to check if file at path is a symlink.
 fn is_symlink(path: &PathBuf) -> bool {
     path.symlink_metadata()
         .ok()
@@ -221,6 +240,7 @@ fn is_symlink(path: &PathBuf) -> bool {
         .is_some()
 }
 
+/// Wrapper around libc's unsafe access call.
 fn access(rwx: i32, c_path: &CString) -> bool {
     (unsafe { libc::access(c_path.as_ptr(), rwx) } == 0)
 }
