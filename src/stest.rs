@@ -133,7 +133,11 @@ impl<'t> Stest<'t> {
         if self.opt.dir_contents {
             iter.map(|path| self.test_dir(&path)).fold(false, reduce)
         } else {
-            iter.map(|path| self.test(&path)).fold(false, reduce)
+            iter.map(|path| {
+                path.to_str()
+                    .and_then(|file_name| Some(self.test(&path, file_name)))
+                    .unwrap_or(false)
+            }).fold(false, reduce)
         }
     }
 
@@ -143,37 +147,33 @@ impl<'t> Stest<'t> {
                 path_result.ok().and_then(|path| Some(path.path()))
             });
 
-            return dir_contents.map(|file| self.test(&file)).fold(
-                false,
-                reduce,
-            );
+            return dir_contents
+                .map(|path| {
+                    path.file_name()
+                        .and_then(|os_str| os_str.to_str())
+                        .and_then(|file_name| Some(self.test(&path, file_name)))
+                        .unwrap_or(false)
+                })
+                .fold(false, reduce);
         }
 
         false
     }
 
-    fn test(&self, path: &PathBuf) -> bool {
+    fn test(&self, path: &PathBuf, file_name: &str) -> bool {
 
         let file = path.metadata();
         let c_path = path.to_str().and_then(|path| CString::new(path).ok());
-        let file_name = match path.file_name() {
-            Some(os_str) => os_str.to_str(),
-            None => {
-                path.to_str().and_then(|path_str| {
-                    path_str.split(std::path::MAIN_SEPARATOR).last()
-                })
-            }
-        };
 
+        // The test outcome.
+        let mut result = false;
 
-        let mut result = file.is_ok() && c_path.is_some() && file_name.is_some();
-
-        if result {
-            // If `result` is true, all three are guaranteed to unwrap.
+        // Check if file is accessible.
+        if file.is_ok() && c_path.is_some() {
             let file = file.unwrap();
             let c_path = c_path.unwrap();
-            let file_name = file_name.unwrap();
 
+            // If file is accessible test it.
             result = (self.opt.hidden || !file_name.starts_with('.')) &&
                 (!self.opt.block_special || s_isval(libc::S_IFBLK, &file)) &&
                 (!self.opt.char_special || s_isval(libc::S_IFCHR, &file)) &&
@@ -193,14 +193,12 @@ impl<'t> Stest<'t> {
                 (!self.opt.executable || access(libc::X_OK, &c_path));
         }
 
+        // Invert result if necessary.
         result ^= self.opt.invert;
 
+        // Print successful result unless asked not to.
         if result && !self.opt.quiet {
-            if let Some(name) = file_name {
-                println!("{}", name);
-            } else if let Some(name) = path.to_str() {
-                println!("{}", name);
-            }
+            println!("{}", file_name);
         }
 
         result
