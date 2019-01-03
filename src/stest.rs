@@ -104,7 +104,7 @@ fn reduce(acc: bool, x: bool) -> bool {
 
 /// Run stest with the provided options. Returns an error if it cannot open the
 /// `newer_than` or `older_than` files.
-pub fn run(opt: &Opt) -> Result<bool, Box<Error>> {
+pub fn run(opt: &Opt) -> Result<bool, std::io::Error> {
     let compare = if let Some(ref file_path) = opt.newer_than {
         Some(file_path.metadata()?.modified()?)
     } else if let Some(ref file_path) = opt.older_than {
